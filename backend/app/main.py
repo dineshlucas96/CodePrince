@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, Session, sessionmaker
 
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///./dsa_forge.db")
@@ -87,7 +87,7 @@ def progress_for(s,u,qid):
 def seed():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
-      columns=[row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)")]
+      columns={column["name"] for column in inspect(conn).get_columns("users")}
       if "role" not in columns: conn.exec_driver_sql("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'student'")
       if "registration_number" not in columns: conn.exec_driver_sql("ALTER TABLE users ADD COLUMN registration_number VARCHAR(64)")
     with SessionLocal() as s:
@@ -165,6 +165,22 @@ def profile_summary(user:User,s:Session):
 @app.get("/api/profile/me")
 def own_profile(u:User=Depends(current),s:Session=Depends(db)):
     return profile_summary(u,s)
+
+@app.get("/api/students/search")
+def search_students(q: str = "", u: User = Depends(current), s: Session = Depends(db)):
+    term = q.strip().lower()
+    if len(term) < 2:
+        return []
+    statement = select(User).where(User.role == "student")
+    if term.startswith("student-") and term[8:].isdigit():
+        statement = statement.where(User.id == int(term[8:]))
+    else:
+        statement = statement.where(func.lower(User.email).contains(term))
+    users = list(s.scalars(statement.order_by(User.id).limit(10)))
+    return [{
+        "username": f"student-{user.id}",
+        "display_name": user.email.split("@", 1)[0].replace(".", " ").replace("_", " ").title(),
+    } for user in users]
 
 @app.get("/api/u/{username}")
 def public_profile(username:str,s:Session=Depends(db)):
